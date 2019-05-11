@@ -67,8 +67,8 @@ def script_main(session):
     # If a VRF was specified, update the commands and outputs to reflect this.
     if selected_vrf:
         send_cmd = send_cmd + " vrf {0}".format(selected_vrf)
-        script.hostname = script.hostname + "-VRF-{0}".format(selected_vrf)
-        logger.debug("Updated hostname to: '{0}'".format(script.hostname))
+        session.hostname = session.hostname + "-VRF-{0}".format(selected_vrf)
+        logger.debug("Updated hostname to: '{0}'".format(session.hostname))
 
     # Get "show ip arp" data
     raw_arp = session.get_command_output(send_cmd)
@@ -94,7 +94,11 @@ if __name__ == "__builtin__":
     # Get session object for the SecureCRT tab that the script was launched from.
     crt_session = crt_script.get_main_session()
     # Run script's main logic against our session
-    script_main(crt_session)
+    try:
+        script_main(crt_session)
+    except Exception:
+        crt_session.end_cisco_session()
+        raise
     # Shutdown logging after
     logging.shutdown()
 

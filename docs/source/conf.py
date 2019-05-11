@@ -18,8 +18,14 @@
 #
 import os
 import sys
-sys.path.insert(0, os.path.abspath("/Users/jcaesar/Development/repository/securecrt-tools"))
+sys.path.insert(0, os.path.abspath("../../"))
+from recommonmark.parser import CommonMarkParser
 
+source_parsers = {
+    '.md': CommonMarkParser,
+}
+
+source_suffix = ['.rst', '.md']
 
 # -- General configuration ------------------------------------------------
 

@@ -35,6 +35,11 @@ def script_main(script):
     CSV file and export each to a CSV file containing the important information, such as Remote Device hostname, model
     and IP information, in addition to the local and remote interfaces that connect the devices.
 
+    **Script Settings** (found in settings/settings.ini):
+
+    * | **strip_domains** -  A list of domain names that will be stripped away if found in the CDP remote device name.
+
+
     :param script: A subclass of the scripts.Script object that represents the execution of this particular script
                    (either CRTScript or DirectScript)
     :type script: scripts.Script
@@ -52,90 +57,51 @@ def script_main(script):
     if not device_list:
         return
 
-    # ###########################################  START JUMP BOX SECTION  #############################################
-    # Check settings if we should use a jumpbox.  If so, prompt for password (and possibly missing values)
-    use_jumpbox = script.settings.getboolean("Global", "use_jumpbox")
+    # Check settings if we should use a proxy/jumpbox
+    use_proxy = script.settings.getboolean("Global", "use_proxy")
+    default_proxy_session = script.settings.get("Global", "proxy_session")
 
-    if use_jumpbox:
-        jumpbox = script.settings.get("Global", "jumpbox_host")
-        j_username = script.settings.get("Global", "jumpbox_user")
-        j_ending = script.settings.get("Global", "jumpbox_prompt_end")
+    # ########################################  START DEVICE CONNECT LOOP  ###########################################
 
-        if not jumpbox:
-            jumpbox = script.prompt_window("Enter the HOSTNAME or IP for the jumpbox".format(jumpbox))
-            script.settings.update("Global", "jumpbox_host", jumpbox)
-
-        if not j_username:
-            j_username = script.prompt_window("JUMPBOX: Enter the USERNAME for {0}".format(jumpbox))
-            script.settings.update("Global", "jumpbox_user", j_username)
-
-        j_password = script.prompt_window("JUMPBOX: Enter the PASSWORD for {0}".format(j_username), hide_input=True)
-
-        if not j_ending:
-            j_ending = script.prompt_window("Enter the last character of the jumpbox CLI prompt")
-            script.settings.update("Global", "jumpbox_prompt_end", j_ending)
-
-    # #############################################  END JUMP BOX SECTION  #############################################
-
-    # #########################################  START DEVICE CONNECT LOOP  ############################################
-
-    # We are not yet connected to a jump box.  This will be updated later in the code if needed.
-    jump_connected = False
     # Create a filename to keep track of our connection logs, if we have failures.  Use script name without extension
     failed_log = session.create_output_filename("{0}-LOG".format(script_name.split(".")[0]), include_hostname=False)
 
     for device in device_list:
-        hostname = device['hostname']
-        protocol = device['protocol']
-        username = device['username']
-        password = device['password']
-        enable = device['enable']
+        hostname = device['Hostname']
+        protocol = device['Protocol']
+        username = device['Username']
+        password = device['Password']
+        enable = device['Enable']
+        try:
+            proxy = device['Proxy Session']
+        except KeyError:
+            proxy = None
 
-        if use_jumpbox:
-            logger.debug("<M_CDP_TO_CSV> Connecting to {0} via jumpbox.".format(hostname))
-            if "ssh" in protocol.lower():
-                try:
-                    if not jump_connected:
-                        session.connect_ssh(jumpbox, j_username, j_password, prompt_endings=[j_ending])
-                        jump_connected = True
-                    session.ssh_via_jump(hostname, username, password)
-                    per_device_work(session, enable)
-                    session.disconnect_via_jump()
-                except (sessions.ConnectError, sessions.InteractionError) as e:
-                    error_msg = e.message
-                    with open(failed_log, 'a') as logfile:
-                        logfile.write("Connect to {0} failed: {1}\n".format(hostname, error_msg))
-                    session.disconnect()
-                    jump_connected = False
-            elif protocol.lower() == "telnet":
-                try:
-                    if not jump_connected:
-                        session.connect_ssh(jumpbox, j_username, j_password, prompt_endings=[j_ending])
-                        jump_connected = True
-                    session.telnet_via_jump(hostname, username, password)
-                    per_device_work(session, enable)
-                    session.disconnect_via_jump()
-                except (sessions.ConnectError, sessions.InteractionError) as e:
-                    with open(failed_log, 'a') as logfile:
-                        logfile.write("Connect to {0} failed: {1}\n".format(hostname, e.message))
-                    session.disconnect()
-                    jump_connected = False
-        else:
-            logger.debug("<M_CDP_TO_CSV> Connecting to {0}".format(hostname))
-            try:
-                session.connect(hostname, username, password, protocol=protocol)
-                per_device_work(session, enable)
+        if not proxy and use_proxy:
+            proxy = default_proxy_session
+
+        logger.debug("<M_CDP_TO_CSV> Connecting to {0}".format(hostname))
+        try:
+            script.connect(hostname, username, password, protocol=protocol)
+            session = script.get_main_session()
+            per_device_work(session, enable)
+            script.disconnect()
+        except scripts.ConnectError as e:
+            with open(failed_log, 'a') as logfile:
+                logfile.write("<M_CDP_TO_CSV> Connect to {0} failed: {1}\n".format(hostname, e.message))
                 session.disconnect()
-            except sessions.ConnectError as e:
-                with open(failed_log, 'a') as logfile:
-                    logfile.write("Connect to {0} failed: {1}\n".format(hostname, e.message))
-            except sessions.InteractionError as e:
-                with open(failed_log, 'a') as logfile:
-                    logfile.write("Failure on {0}: {1}\n".format(hostname, e.message))
-
-    # If we are still connected to our jump box, disconnect.
-    if jump_connected:
-        session.disconnect()
+        except sessions.InteractionError as e:
+            with open(failed_log, 'a') as logfile:
+                logfile.write("<M_CDP_TO_CSV> Failure on {0}: {1}\n".format(hostname, e.message))
+                session.disconnect()
+        except sessions.UnsupportedOSError as e:
+            with open(failed_log, 'a') as logfile:
+                logfile.write("<M_CDP_TO_CSV> Unsupported OS on {0}: {1}\n".format(hostname, e.message.strip()))
+                session.disconnect()
+        except Exception as e:
+            with open(failed_log, 'a') as logfile:
+                logfile.write("<M_SCRIPT> Exception on {0}: {1} ({2})\n".format(hostname, e.message.strip(), e))
+                session.disconnect()
 
     # ##########################################  END DEVICE CONNECT LOOP  #############################################
 

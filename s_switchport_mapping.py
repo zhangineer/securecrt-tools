@@ -27,7 +27,7 @@ except ImportError:
 
 # Import the manuf module for MAC to Vendor lookups
 try:
-    import securecrt_tools.manuf as manuf
+    from securecrt_tools import manuf
     mac_lookup = True
 except ImportError:
     mac_lookup = False
@@ -40,7 +40,7 @@ logger.debug("Starting execution of {0}".format(script_name))
 
 # ################################################   SCRIPT LOGIC   ###################################################
 
-def script_main(session, gateway_hostname=""):
+def script_main(session):
     """
     | SINGLE device script
     | Author: Jamie Caesar
@@ -73,6 +73,12 @@ def script_main(session, gateway_hostname=""):
 
     arp_lookup = get_arp_info(script)
 
+    # Read in MAC manufacturer database, if everything imported properly
+    if mac_lookup:
+        mac_lookup_table = manuf.MacParser(script_dir + "/securecrt_tools/manuf")
+    else:
+        mac_lookup_table = None
+
     output = []
     for intf_entry in int_table:
         intf = intf_entry[0]
@@ -98,10 +104,11 @@ def script_main(session, gateway_hostname=""):
                 for entry in arp_list:
                     mac, ip = entry
                     if mac and mac_lookup:
-                        mac_vendor = mac_to_vendor(mac)
+                        mac_vendor = mac_to_vendor(mac_lookup_table, mac)
                     if dns_lookup and ip:
                         try:
-                            fqdn, _, _, = socket.gethostbyaddr(ip)
+                            # fqdn, _, _, = socket.gethostbyaddr(ip)
+                            pass
                         except socket.herror:
                             pass
                     output_line = [intf, state, mac, mac_vendor, fqdn, ip, vlan, desc]
@@ -117,22 +124,17 @@ def script_main(session, gateway_hostname=""):
                 ip = None
                 fqdn = None
                 mac_vendor = None
-                if mac and mac in arp_lookup.keys():
-                    for entry in arp_lookup[mac]:
-                        ip, arp_vlan = entry
-                        if vlan == arp_vlan:
-                            if mac and mac_lookup:
-                                mac_vendor = mac_to_vendor(mac)
-                            if dns_lookup and ip:
-                                try:
-                                    fqdn, _, _, = socket.gethostbyaddr(ip)
-                                except socket.herror:
-                                    pass
-                            output_line = [intf, state, mac, mac_vendor, fqdn, ip, vlan, desc]
-                            output.append(output_line)
-                else:
-                    output_line = [intf, state, mac, mac_vendor, fqdn, ip, vlan, desc]
-                    output.append(output_line)
+                if mac and mac_entry in arp_lookup.keys():
+                    ip = arp_lookup[(mac, vlan)]
+                    if dns_lookup and ip:
+                        try:
+                            fqdn, _, _, = socket.gethostbyaddr(ip)
+                        except socket.herror:
+                            pass
+                if mac and mac_lookup:
+                    mac_vendor = mac_to_vendor(mac_lookup_table, mac)
+                output_line = [intf, state, mac, mac_vendor, fqdn, ip, vlan, desc]
+                output.append(output_line)
 
         else:
             output_line = [intf, state, None, None, None, None, None, desc]
@@ -310,22 +312,18 @@ def get_arp_info(script):
         else:
             arp_lookup[intf] = [(mac, ip)]
 
-        if mac in arp_lookup.keys():
-            arp_lookup[mac].append((ip, vlan))
-        else:
-            arp_lookup[mac] = [(ip, vlan)]
+        arp_lookup[(mac, vlan)] = ip
 
     return arp_lookup
 
 
-def mac_to_vendor(mac):
+def mac_to_vendor(mac_lookup_table, mac):
     """Lookup MAC Vendor Info
 
     :param mac: MAC address to Lookup Vendor Info on
     :return: MAC Vendor
     """
-    p = manuf.MacParser(script_dir + "/securecrt_tools/manuf")
-    mac_manuf, mac_comment = p.get_all(mac)
+    mac_manuf, mac_comment = mac_lookup_table.get_all(mac)
     if mac_comment:
         return mac_comment
     else:
@@ -341,7 +339,11 @@ if __name__ == "__builtin__":
     # Get session object for the SecureCRT tab that the script was launched from.
     crt_session = crt_script.get_main_session()
     # Run script's main logic against our session
-    script_main(crt_session)
+    try:
+        script_main(crt_session)
+    except Exception:
+        crt_session.end_cisco_session()
+        raise
     # Shutdown logging after
     logging.shutdown()
 

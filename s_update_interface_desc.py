@@ -36,10 +36,14 @@ def script_main(session, prompt_check_mode=True, check_mode=True, enable_pass=No
     write the configuration changes to a file (for verification or later manual application).  If not, then the script
     will push the configuration commands to the device and save the configuration.
 
-    Local Settings:
-    "strip_domains" -  A list of domain names that will be stripped away if found in the CDP remote device name.
-    "take_backups" - If set to True, the script will save a copy of the running config before and after making changes.
-    "rollback_file" - If set to True, the script will generate a rollback configuration script and save it to a file.
+    **Script Settings** (found in settings/settings.ini):
+
+    * | **strip_domains** -  A list of domain names that will be stripped away if found in
+      | the CDP remote device name.
+    * | **take_backups** - If True, the script will save a copy of the running config before
+      | and after making changes.
+    * | **rollback_file** - If True, the script will generate a rollback configuration script
+      | and save it to a file.
 
     :param session: A subclass of the sessions.Session object that represents this particular script session (either
         SecureCRTSession or DirectSession)
@@ -59,7 +63,7 @@ def script_main(session, prompt_check_mode=True, check_mode=True, enable_pass=No
     script = session.script
 
     # Start session with device, i.e. modify term parameters for better interaction (assuming already connected)
-    session.start_cisco_session()
+    session.start_cisco_session(enable_pass=enable_pass)
 
     # Validate device is running a supported OS
     session.validate_os(["IOS", "NXOS"])
@@ -81,9 +85,30 @@ def script_main(session, prompt_check_mode=True, check_mode=True, enable_pass=No
             session.end_cisco_session()
             return
 
-    # Get existing descriptions, so we don't push commands that would not change the description.
-    # TODO mgmt0 isn't always listed in 'show int desc'.  Perhaps parse from show-run?
-    ex_desc_lookup = get_desc_table(session)
+    # Get setting if we want to save before/after backups
+    take_backups = script.settings.getboolean("update_interface_desc", "take_backups")
+
+    if not check_mode and take_backups:
+        # Save "show run" to file, plus read it back in for processing.
+        before_filename = session.create_output_filename("1-show-run-BEFORE")
+        session.write_output_to_file("show run", before_filename)
+        # Read in contents of file for processing
+        with open(before_filename, 'r') as show_run:
+            show_run_before = show_run.read()
+    else:
+        # Just read in "show run" contents for processing
+        show_run_before = session.get_command_output("show run")
+
+    # Use TextFSM to extract interface/description pairs from the show run output
+    desc_template = session.script.get_template("cisco_os_show_run_desc.template")
+    desc_list = utilities.textfsm_parse_to_list(show_run_before, desc_template)
+
+    # Turn the TextFSM list into a dictionary we can use to lookup by interface
+    ex_desc_lookup = {}
+    # Change interface names to long versions for better matching with other outputs
+    for entry in desc_list:
+        intf = utilities.long_int_name(entry[0])
+        ex_desc_lookup[intf] = entry[1]
 
     # Get CDP Data
     raw_cdp = session.get_command_output("show cdp neighbors detail")
@@ -170,18 +195,14 @@ def script_main(session, prompt_check_mode=True, check_mode=True, enable_pass=No
     # If in check-mode, generate configuration and write it to a file, otherwise push the config to the device.
     if config_commands:
         if check_mode:
-            output_filename = session.create_output_filename("intf-desc", include_date=False)
+            output_filename = session.create_output_filename("intf-desc")
             with open(output_filename, 'wb') as output_file:
                 for command in config_commands:
                     output_file.write("{0}\n".format(command))
-            rollback_filename = session.create_output_filename("intf-rollback", include_date=False)
+            rollback_filename = session.create_output_filename("intf-rollback")
         else:
             # Check settings to see if we prefer to save backups before/after applying changes
-            take_backups = script.settings.getboolean("update_interface_desc", "take_backups")
             if take_backups:
-                # Back up running config prior to changes
-                before_filename = session.create_output_filename("1-show-run-BEFORE")
-                session.write_output_to_file("show run", before_filename)
                 # Push configuration, capturing the configure terminal log
                 output_filename = session.create_output_filename("2-CONFIG-RESULTS")
                 session.send_config_commands(config_commands, output_filename)
@@ -268,34 +289,6 @@ def add_port_channels(desc_data, pc_data):
             desc_data[po_name] = list(neighbor_set)
 
 
-def get_desc_table(session):
-    """
-    A function that creates a lookup dictionary that can be used to get the description of an interface.
-
-    :param session: The session object that represents this connection to a remote device
-    :type session: sessions.Session
-
-    :return: A dictionary that allows getting the description of an interface by using the interface as the key.
-    :rtype: dict
-    """
-    if session.os == "IOS":
-        int_template = session.script.get_template("cisco_ios_show_interfaces_description.template")
-    else:
-        int_template = session.script.get_template("cisco_nxos_show_interface_description.template")
-
-    raw_int_desc = session.get_command_output("show interface description")
-    desc_list = utilities.textfsm_parse_to_list(raw_int_desc, int_template)
-
-    desc_table = {}
-    # Change interface names to long versions for better matching with other outputs
-    for entry in desc_list:
-        intf = utilities.long_int_name(entry[0])
-        desc_table[intf] = entry[1]
-
-    return desc_table
-
-
-
 # ################################################  SCRIPT LAUNCH   ###################################################
 
 # If this script is run from SecureCRT directly, use the SecureCRT specific class
@@ -305,7 +298,11 @@ if __name__ == "__builtin__":
     # Get session object for the SecureCRT tab that the script was launched from.
     crt_session = crt_script.get_main_session()
     # Run script's main logic against our session
-    script_main(crt_session)
+    try:
+        script_main(crt_session)
+    except Exception:
+        crt_session.end_cisco_session()
+        raise
     # Shutdown logging after
     logging.shutdown()
 

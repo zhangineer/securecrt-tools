@@ -34,8 +34,9 @@ def script_main(session):
     containing the important information, such as Remote Device hostname, model and IP information, in addition to the
     local and remote interfaces that connect the devices.
 
-    | Script Settings (found in settings/settings.ini):
-    | strip_domains -  A list of domain names that will be stripped away if found in the CDP remote device name.
+    **Script Settings** (found in settings/settings.ini):
+
+    * | **strip_domains** -  A list of domain names that will be stripped away if found in the CDP remote device name.
 
     :param session: A subclass of the sessions.Session object that represents this particular script session (either
                     SecureCRTSession or DirectSession)
@@ -65,10 +66,14 @@ def script_main(session):
     fsm_results = utilities.textfsm_parse_to_list(raw_cdp, template_file, add_header=True)
 
     # Since "System Name" is a newer NXOS feature -- try to extract it from the device ID when its empty.
-    for entry in fsm_results:
+    for entry in fsm_results[1:]:
         # entry[2] is system name, entry[1] is device ID
         if entry[2] == "":
             entry[2] = utilities.extract_system_name(entry[1], strip_list=strip_list)
+        # Convert list of IPs into a comma-separated list of IPs
+        entry[4] = ", ".join(entry[4])
+        # Convert list of Mgmt IPs into a comma-separated list of IPs
+        entry[7] = ", ".join(entry[7])
 
     output_filename = session.create_output_filename("cdp", ext=".csv")
     utilities.list_of_lists_to_csv(fsm_results, output_filename)
@@ -86,7 +91,11 @@ if __name__ == "__builtin__":
     # Get session object for the SecureCRT tab that the script was launched from.
     crt_session = crt_script.get_main_session()
     # Run script's main logic against our session
-    script_main(crt_session)
+    try:
+        script_main(crt_session)
+    except Exception:
+        crt_session.end_cisco_session()
+        raise
     # Shutdown logging after
     logging.shutdown()
 

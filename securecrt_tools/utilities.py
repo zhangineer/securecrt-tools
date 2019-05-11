@@ -11,6 +11,8 @@
 import csv
 import re
 import logging
+import os
+import sys
 
 import securecrt_tools.textfsm as textfsm
 
@@ -106,6 +108,26 @@ def list_of_lists_to_csv(data, filename):
         for line in data:
             logger.debug("Writing row: '{0}'".format(line))
             csv_out.writerow(line)
+    logger.debug("Completed writing to file {0}".format(filename))
+
+
+def list_of_dicts_to_csv(data, filename, header, add_header=True):
+    """
+
+    :param data:
+    :param filename:
+    :param header:
+    :return:
+    """
+    # Validate path before creating file.
+    logger.debug("Opening file {0} for writing".format(filename))
+    with open(filename, 'wb') as output_csv:
+        csv_writer = csv.DictWriter(output_csv, fieldnames=header)
+        if add_header:
+            csv_writer.writeheader()
+        for entry in data:
+            csv_writer.writerow(entry)
+    logger.debug("Completed writing to file {0}".format(filename))
 
 
 def extract_system_name(device_id, strip_list=[]):
@@ -240,6 +262,27 @@ def normalize_protocol(raw_protocol):
         return raw_protocol
 
 
+def expand_number_range(num_string):
+    """
+    A function that will accept a text number range (such as 1,3,5-7) and convert it into a list of integers such as
+    [1, 3, 5, 6, 7]
+
+    :param num_string: <str> A string that is in the format of a number range (e.g. 1,3,5-7)
+    :return: <list> A list of all integers in that range (e.g. [1,3,5,6,7])
+    """
+    output_list = []
+    for item in num_string.split(','):
+        if "-" in item:
+            if item.count('-') != 1:
+                raise ValueError("Invalid range: '{0]'".format(item))
+            else:
+                start, end = map(int, item.split('-'))
+                output_list.extend(range(start, end+1))
+        else:
+            output_list.append(int(item))
+    return output_list
+
+
 def human_sort_key(s):
     """
     A key function to sort alpha-numerically, not by string
@@ -254,4 +297,52 @@ def human_sort_key(s):
     return [int(c) if c.isdigit() else c for c in re.split('([0-9]+)', s)]
 
 
+def remove_empty_or_invalid_file(l_filename):
+    """
+    Check if file is empty or if we captured an error in the command.  If so, delete the file.
 
+    :param l_filename: Name of file to check
+    """
+    # If file isn't empty (greater than 3 bytes)
+    # Some of these file only save one CRLF, and so we can't match on 0
+    # bytes
+    file_size = os.path.getsize(l_filename)
+    if 100 > file_size > 3:
+        # Open the file we just created.
+        with open(l_filename, "r") as new_file:
+            lines = new_file.readlines()[0:3]
+        # If the file only contains invalid command error, delete it.
+        for line in lines:
+            if re.match(r"^\W+\^|^%\W+invalid|^%\W+incomplete|^invalid", line, flags=re.I):
+                new_file.close()
+                os.remove(l_filename)
+                break
+        else:
+            new_file.close()
+    # If the file is empty, delete it
+    elif file_size <= 3:
+        os.remove(l_filename)
+
+
+def path_safe_name(input_string):
+    """
+    This function will remove or replace characters in the input string so that the output is suitable to be used as
+    a file or directory name.
+
+    :param input_string: The string that should be converted into a filename safe version.
+    :type input_string: str
+
+    :return: The filename safe version of the input string
+    """
+    # A list of reserved filename characters in windows.  Using this regardless of versions so files can be sent
+    # between operating systems (linux, OSX, Windows) without having to change them.
+    reserved_chars = ['/', '?', '<', '>', '\\', ':', '*', '|', '"']
+
+    # Place any character that should be replaced with another character below
+    updated_str = input_string.replace('/', '-')
+    updated_str = updated_str.replace("*", "all")
+
+    # Build output string by stripping out the rest of the reserved characters
+    output = ''.join(char for char in updated_str if char not in reserved_chars)
+
+    return output

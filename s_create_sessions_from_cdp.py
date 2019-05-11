@@ -37,9 +37,19 @@ def script_main(session):
     based on the information.  By default all sessions will be created as SSH2, so you may have
     to manually change some sessions to make them work, depending on the device capabilities/configuration.
 
-    Script Settings (found in settings/settings.ini):
-    folder - The path starting from the <SecureCRT Config>/Sessions/ directory where the sessions will be created.
-    strip_domains -  A list of domain names that will be stripped away if found in the CDP remote device name.
+    Only devices that contain "Router" or "Switch" in their capabilities field of the CDP information will have sessions
+    created for them. This skips phones, hosts like VMware or Server modules, and other devices that we don't usually
+    log into directly).
+
+    **NOTE ON DEFAULTS**: This script uses the SecureCRT Default Session settings as a base for any sessions that are
+    created.  The folder where the sessions are saved is specified in the 'settings.ini' file, and the hostname and IP
+    are extracted from the CDP information.  All other setting defaults are configured within SecureCRT.
+
+    **Script Settings** (found in settings/settings.ini):
+
+    * | **folder** - The path starting from the <SecureCRT Config>/Sessions/ directory where
+      | the sessions will be created.
+    * | **strip_domains** -  A list of domain names that will be stripped away if found in the CDP remote device name.
 
     :param session: A subclass of the sessions.Session object that represents this particular script session (either
                     SecureCRTSession or DirectSession)
@@ -66,6 +76,8 @@ def script_main(session):
         # entry[2] is system name, entry[1] is device ID
         if entry[2] == "":
             entry[2] = utilities.extract_system_name(entry[1], strip_list=strip_list)
+        # Convert list of Mgmt IPs into a comma-separated list of IPs
+        entry[7] = ", ".join(entry[7])
 
     session_list = create_session_list(cdp_table)
 
@@ -85,7 +97,8 @@ def script_main(session):
 
     setting_msg = "{0} sessions created in the Sessions sub-directory '{1}'\n" \
                   "\n" \
-                  "{0} sessions skipped (no IP or duplicate)".format(num_created, dest_folder, num_skipped)
+                  "{0} sessions skipped (no IP, duplicate, or not Router/Switch)".format(num_created,
+                                                                                         dest_folder, num_skipped)
     script.message_box(setting_msg, "Sessions Created", ICON_INFO)
 
     # Return terminal parameters back to the original state.
@@ -103,38 +116,52 @@ def create_session_list(cdp_list):
     :return: A list (system name and IP address) of the sessions that need to be created.
     :rtype: list
     """
+    accepted_capabilities = {"Router", "Switch"}
     created = set()
     session_list = []
     for device in cdp_list:
-        # Extract hostname and IP to create session
-        system_name = device[2]
+        # Get capabilties field of CDP and parse into a set
+        capabilities_string = device[9]
+        capabilities = set(capabilities_string.strip().split(' '))
 
-        # If we couldn't get a System name, use the device ID
-        if system_name == "":
-            system_name = device[1]
+        # Determine if items in "accepted_capabilities" are also in the capabilties of this device.  If so, we'll get
+        # a set of common items.  If not, we'll get an empty set.
+        accepted = capabilities.intersection(accepted_capabilities)
 
-        if system_name in created:
-            logger.debug("Skipping {0} because it is a duplicate.".format(system_name))
-            # Go directly to the next device (skip this one)
-            continue
+        # Check for any items in our "accepted" set - If so, add it to the list to build a session, otherwise skip.
+        if accepted:
+            # Extract hostname and IP to create session
+            system_name = device[2]
 
-        mgmt_ip = device[7]
-        if mgmt_ip == "":
-            if device[4] == "":
-                # If no mgmt IP or interface IP, skip device.
-                logger.debug("Skipping {0} because cannot find IP in CDP data.".format(system_name))
+            # If we couldn't get a System name, use the device ID
+            if system_name == "":
+                system_name = device[1]
+
+            if system_name in created:
+                logger.debug("Skipping {0} because it is a duplicate.".format(system_name))
                 # Go directly to the next device (skip this one)
                 continue
-            else:
-                mgmt_ip = device[4]
-                logger.debug("Using interface IP ({0}) for {1}.".format(mgmt_ip, system_name))
-        else:
-            logger.debug("Using management IP ({0}) for {1}.".format(mgmt_ip, system_name))
 
-        # Add device to session_list
-        session_list.append((system_name, mgmt_ip,))
-        # Create a new session from the default information.
-        created.add(system_name)
+            mgmt_ip = device[7]
+            if not mgmt_ip:
+                if not device[4]:
+                    # If no mgmt IP or interface IP, skip device.
+                    logger.debug("Skipping {0} because cannot find IP in CDP data.".format(system_name))
+                    # Go directly to the next device (skip this one)
+                    continue
+                else:
+                    mgmt_ip = device[4][0]
+                    logger.debug("Using interface IP ({0}) for {1}.".format(mgmt_ip, system_name))
+            else:
+                logger.debug("Using management IP ({0}) for {1}.".format(mgmt_ip, system_name))
+
+            # Add device to session_list
+            session_list.append((system_name, mgmt_ip,))
+            # Create a new session from the default information.
+            created.add(system_name)
+        else:
+            logger.debug("Skipping {0} because capabilties are {1}, which does not contain any of {2}."
+                         .format(device[1], capabilities, accepted_capabilities))
 
     return session_list
 
@@ -148,7 +175,11 @@ if __name__ == "__builtin__":
     # Get session object for the SecureCRT tab that the script was launched from.
     crt_session = crt_script.get_main_session()
     # Run script's main logic against our session
-    script_main(crt_session)
+    try:
+        script_main(crt_session)
+    except Exception:
+        crt_session.end_cisco_session()
+        raise
     # Shutdown logging after
     logging.shutdown()
 
